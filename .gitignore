@@ -1,0 +1,47 @@
+# ---- OS / editor ----
+.DS_Store
+*.swp
+.idea/
+.vscode/
+.claude/
+
+# ---- Python ----
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+.pytest_cache/
+.venv/
+venv/
+
+# ---- Datasets (large and/or licensed — not tracked) ----
+test-data/
+test-scans/
+examples/data/
+*.ply
+*.pcd
+*.bin
+*.las
+*.npy
+*.npz
+
+# ---- Regenerated pipeline outputs ----
+# Scratch figures written to the repo root by the demo/example scripts.
+# Anchored to the root so report/figures/out*.png stays tracked.
+/out*.png
+# Generated HTML demos at the repo root. Keep the showcase page index.html.
+/*.html
+!index.html
+
+# ---- LaTeX build artifacts (report/ is compiled from .tex) ----
+*.aux
+*.log
+*.out
+*.toc
+*.bbl
+*.blg
+*.fls
+*.fdb_latexmk
+*.synctex.gz

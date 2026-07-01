@@ -1,0 +1,74 @@
+# Example nav2 costmap configuration that consumes the lidar OccupancyGrid
+# published by lidar_nav2/costmap_node (default topic: /lidar_costmap).
+#
+# Strategy (map-source only): the lidar grid enters nav2 through a StaticLayer,
+# exactly like a SLAM/map_server map would, and nav2's InflationLayer inflates it
+# against the robot footprint. That is why the node publishes WITHOUT its own
+# inflation (inflate_obstacles:=False) -- inflation happens once, here.
+#
+# Merge the blocks below into your own nav2_params.yaml (or pass this file to the
+# relevant servers). Only the costmap sections are shown; planner_server,
+# controller_server, bt_navigator etc. are your existing nav2 setup.
+
+global_costmap:
+  global_costmap:
+    ros__parameters:
+      update_frequency: 2.0
+      publish_frequency: 2.0
+      global_frame: odom            # match costmap_node target_frame
+      robot_base_frame: base_link
+      rolling_window: true          # follow the robot; lidar map is local/odom
+      width: 20
+      height: 20
+      resolution: 0.10              # should match the node's resolution
+      track_unknown_space: true
+      # Quadruped footprint (rectangle, meters). Use `footprint` OR `robot_radius`.
+      footprint: "[[0.35, 0.18], [0.35, -0.18], [-0.35, -0.18], [-0.35, 0.18]]"
+      plugins: ["lidar_static_layer", "inflation_layer"]
+
+      lidar_static_layer:
+        plugin: "nav2_costmap_2d::StaticLayer"
+        enabled: true
+        map_topic: /lidar_costmap            # <- node output_topic
+        map_subscribe_transient_local: true  # node publishes latched
+        subscribe_to_updates: false
+        # Preserve the soft slope/roughness gradient instead of free/lethal only:
+        trinary_costmap: false
+        # Cells at/above this OccupancyGrid value are lethal (node encodes 100).
+        lethal_cost_threshold: 100
+
+      inflation_layer:
+        plugin: "nav2_costmap_2d::InflationLayer"
+        enabled: true
+        # Inflate around the footprint so the planner keeps body clearance.
+        inflation_radius: 0.45        # >= footprint half-diagonal + margin
+        cost_scaling_factor: 3.0
+
+local_costmap:
+  local_costmap:
+    ros__parameters:
+      update_frequency: 5.0
+      publish_frequency: 5.0
+      global_frame: odom
+      robot_base_frame: base_link
+      rolling_window: true
+      width: 6
+      height: 6
+      resolution: 0.10
+      footprint: "[[0.35, 0.18], [0.35, -0.18], [-0.35, -0.18], [-0.35, 0.18]]"
+      plugins: ["lidar_static_layer", "inflation_layer"]
+
+      lidar_static_layer:
+        plugin: "nav2_costmap_2d::StaticLayer"
+        enabled: true
+        map_topic: /lidar_costmap
+        map_subscribe_transient_local: true
+        subscribe_to_updates: false
+        trinary_costmap: false
+        lethal_cost_threshold: 100
+
+      inflation_layer:
+        plugin: "nav2_costmap_2d::InflationLayer"
+        enabled: true
+        inflation_radius: 0.45
+        cost_scaling_factor: 3.0
