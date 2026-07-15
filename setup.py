@@ -27,6 +27,8 @@ setup(
     entry_points={
         "console_scripts": [
             "costmap_node = lidar_nav2.costmap_node:main",
+            "realtime_nav = lidar_nav2.realtime_nav_node:main",
+            "go2_twist_bridge = lidar_nav2.go2_twist_bridge:main",
         ],
     },
 )
