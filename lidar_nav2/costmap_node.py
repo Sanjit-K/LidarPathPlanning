@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""ROS2 (Humble) node: lidar PointCloud2 -> nav2-consumable OccupancyGrid.
+"""ROS2 node (Foxy+): lidar PointCloud2 -> nav2-consumable OccupancyGrid.
 
 Subscribes to a sensor_msgs/PointCloud2, discretizes it into a 2.5D
 traversability grid with the project's `discretize()` pipeline, and republishes
@@ -37,9 +37,9 @@ from rclpy.qos import QoSProfile, QoSDurabilityPolicy, QoSReliabilityPolicy
 
 from nav_msgs.msg import OccupancyGrid
 from sensor_msgs.msg import PointCloud2
-from sensor_msgs_py import point_cloud2
 
 from lidar_pathplan import GridConfig, QuadrupedParams, discretize, cost_to_occupancy
+from .pc2 import cloud_to_xyz    # Foxy-compatible (no sensor_msgs_py)
 
 
 class LidarCostmapNode(Node):
@@ -121,13 +121,7 @@ class LidarCostmapNode(Node):
 
     def _read_xyz(self, msg: PointCloud2) -> np.ndarray:
         """Extract an (N,3) float64 array of finite x,y,z from a PointCloud2."""
-        structured = point_cloud2.read_points(
-            msg, field_names=("x", "y", "z"), skip_nans=True)
-        if structured.size == 0:
-            return np.empty((0, 3), dtype=np.float64)
-        xyz = np.stack([structured["x"], structured["y"], structured["z"]], axis=-1)
-        xyz = np.asarray(xyz, dtype=np.float64)
-        return xyz[np.isfinite(xyz).all(axis=1)]
+        return cloud_to_xyz(msg)
 
     def _to_msg(self, grid, stamp) -> OccupancyGrid:
         occ = cost_to_occupancy(grid)            # (rows, cols) int8, row-major in +Y

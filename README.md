@@ -123,7 +123,7 @@ your own clouds:
   surface is denoised before slope/step are computed: 1 for clean lidar, 3–5 for
   noisy reconstruction.
 
-## Using it with nav2 (ROS2 Humble)
+## Using it with nav2 (ROS2 Foxy or newer)
 
 This repo is also a ROS2 ament_python package (`lidar_nav2`). The node
 `costmap_node` subscribes to a `PointCloud2`, runs `discretize()`, and republishes
@@ -140,7 +140,7 @@ StaticLayer, so the planner still prefers flat, smooth ground.
 PointCloud2  ──►  costmap_node  ──►  /lidar_costmap (OccupancyGrid)  ──►  nav2 StaticLayer + InflationLayer
 ```
 
-Build and run (on an Ubuntu 22.04 / Humble machine):
+Build and run (Ubuntu 20.04 / Foxy — matches the Go2 — or 22.04 / Humble):
 
 ```bash
 # place this repo at  <ws>/src/lidar_nav2  then:
@@ -207,6 +207,59 @@ walking speed and has the robot APF-track them (~0.5 m gap) while avoiding hazar
 > known and passed to `map.update(points, sensor_origin)`. On a real robot, plug in
 > your SLAM (e.g. LIO/ICP) to supply those poses.
 
+## Real-time onboard navigation (deploy to the robot)
+
+`lidar_nav2/realtime_nav_node.py` is the deployable navigator: the **start is
+always the dog's own position** (from odometry) and the **goal is a world
+coordinate** — preprogrammed waypoints or sent at runtime (e.g. RViz "2D Goal
+Pose"). Every scan rebuilds a robot-centric local traversability grid and the
+path is **replanned continuously**, so the robot routes around obstacles as the
+lidar discovers them.
+
+```
+/points (PointCloud2) ─┐
+/odom  (Odometry) ─────┼─► realtime_nav ─► /cmd_vel (Twist)
+/goal_pose (PoseStamped)┘        │
+                                 ├─► /planned_path  (Path, for RViz)
+                                 └─► /local_costmap (OccupancyGrid, for RViz)
+```
+
+```bash
+# on the robot (ROS2 Foxy), e.g. Unitree Go2-style topics:
+ros2 launch lidar_nav2 realtime_nav.launch.py \
+    input_topic:=/utlidar/cloud_deskewed odom_topic:=/utlidar/robot_odom \
+    waypoints:="[5.0, 0.0, 5.0, 5.0]" max_speed:=0.4
+
+# or send a goal at runtime:
+ros2 topic pub -1 /goal_pose geometry_msgs/PoseStamped \
+    "{header: {frame_id: odom}, pose: {position: {x: 5.0, y: 2.0}}}"
+```
+
+Design (all in the ROS-free core `lidar_nav2/navigator_core.py`, so it is fully
+unit-tested off-robot in `tests/test_navigator_core.py`):
+
+- **Rolling window** — the grid is a fixed-size square centered on the robot,
+  so compute stays bounded (~19 ms per scan→grid→replan cycle at 8 m / 0.10 m);
+  a goal beyond the window is projected onto its edge (rolling-horizon).
+- **Unknown space is untraversable** (conservative onboard default): the dog is
+  never commanded into space the lidar hasn't seen. If the goal isn't reachable
+  in the current map, it plans to the reachable cell nearest the goal, so it
+  drives to the frontier and new scans open the way.
+- **Safety stops** — commanded velocity is zero whenever the newest scan is
+  older than `scan_timeout` or no path exists.
+- **Carrot follower** — heading-error controller with a lookahead point;
+  rotates in place first when the heading error is large. Output is a body-frame
+  `Twist` (`linear.x`, `angular.z`) that quadruped walk controllers accept.
+
+**Robot-specific wiring:** the cloud must be in the same frame as the odometry
+(`odom_frame`); if your driver publishes in the base frame, set
+`cloud_in_odom_frame:=false` and the node transforms points with the odom pose.
+For the **Unitree Go2**, `lidar_nav2/go2_twist_bridge.py` converts `/cmd_vel`
+into Sport-API `Move` requests (with a stop watchdog and a dry-run mode) —
+**see [deploy/DEPLOYMENT.md](deploy/DEPLOYMENT.md) for the full step-by-step
+lab runbook**: computer setup, DDS connection, frame verification, motion-disabled
+dry run, first live walk, and tuning.
+
 ## Files
 
 | File | Purpose |
@@ -223,6 +276,10 @@ walking speed and has the robot APF-track them (~0.5 m gap) while avoiding hazar
 | `examples/paper_navigation_demo.py` | paper stack demo (`stack` and `follow` modes) |
 | `tests/test_pipeline.py`, `tests/test_paper_method.py` | test suites (10 + 11) |
 | `lidar_nav2/costmap_node.py` | ROS2 node: PointCloud2 → OccupancyGrid for nav2 |
+| `lidar_nav2/navigator_core.py` | ROS-free real-time navigator (rolling map, replan, follower) |
+| `lidar_nav2/realtime_nav_node.py` | ROS2 node: onboard real-time navigation → `/cmd_vel` |
+| `launch/realtime_nav.launch.py` | launch file for the onboard navigator |
+| `tests/test_navigator_core.py` | simulated end-to-end navigation tests |
 | `config/nav2_costmap_params.yaml` | nav2 costmap config consuming the grid |
 | `launch/lidar_costmap.launch.py` | launch file for the node |
 | `package.xml`, `setup.py` | ROS2 ament_python package metadata |
