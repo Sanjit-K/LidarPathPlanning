@@ -3,7 +3,8 @@
 Turn a 3D lidar point cloud into a discrete, plannable map and find a traversable
 path across it. The discretization is a **2.5D elevation grid** with a
 traversability cost layer — the representation legged robots actually use, because
-it keeps the step/slope/gap information a flat 2D occupancy grid throws away,
+it keeps height, step, slope, and roughness information that a flat 2D occupancy
+grid throws away,
 without the cost of a full 3D voxel grid.
 
 ```
@@ -17,10 +18,10 @@ point cloud (N×3)  ──►  2.5D elevation grid  ──►  traversability co
 
 [![Preview of the Unitree Go2 building a live traversability map and following an A-star path](docs/assets/unitree-pathplanning-demo.gif)](https://youtu.be/dkycOf34YqI)
 
-The Go2 builds a persistent 2.5D costmap from its live lidar stream, renders
-traversable and lethal cells in the browser, and follows continuously replanned
-A\* paths toward clicked goals. The preview shows a later section of the demo;
-click it to open the full video on YouTube.
+The Go2 builds a persistent sparse 2.5D traversability map from its live lidar
+stream, renders traversable and lethal cells in the browser, and follows
+continuously replanned A\* paths toward clicked goals. The preview shows a later
+section of the demo; click it to open the full video on YouTube.
 
 ### Live global costmap
 
@@ -28,6 +29,16 @@ click it to open the full video on YouTube.
 
 Green tiles are traversable, red tiles are lethal or footprint-inflated, the
 red trace is the robot trajectory, and the cyan marker is the clicked goal.
+
+The live UI accumulates known cells beyond the current 8 m rolling planning
+window and atomically saves the sparse map every five seconds to
+`/home/unitree/lidar_maps/global_costmap_latest.npz` by default. New cells are
+always admitted. Previously mapped cells are refreshed only within the UI's
+**refresh radius** slider (0.5–6.0 m, default 2.5 m), preventing distant,
+higher-uncertainty returns from repeatedly rewriting established terrain. Set
+`LIDAR_GLOBAL_MAP` to change the save path; set `LIDAR_RESUME_MAP=1` to load the
+saved map at startup, but only when the robot is using the same world/odometry
+frame as the saved session.
 
 ## Quick start
 
@@ -61,7 +72,7 @@ grid = discretize(cloud, GridConfig(resolution=0.10), robot)
 start = grid.world_to_cell(0.5, 0.5)   # meters -> (row, col)
 goal  = grid.world_to_cell(9.5, 5.0)
 path  = astar(grid.cost, start, goal)  # list of (row, col), or None
-xy    = [grid.cell_to_world(r, c) for r, c in path]   # back to meters
+xy    = None if path is None else [grid.cell_to_world(r, c) for r, c in path]
 ```
 
 ## How the discretization works
@@ -71,16 +82,18 @@ xy    = [grid.cell_to_world(r, c) for r, c in path]   # back to meters
    accumulated in a single vectorized pass (`np.add.at` over a flat cell index),
    so it scales to millions of points.
 3. **Geometry layers**
-   - `elevation` — mean ground height per cell (`NaN` where no returns landed).
-   - `roughness` — within-cell height **standard deviation** (robust to a stray
-     return and to point density, unlike raw max−min).
+   - `elevation` — mean return height per cell (`NaN` where no returns landed);
+     this is not a separate ground-segmentation stage.
+   - `roughness` — within-cell height **standard deviation**, which is less
+     sensitive to sample count and isolated extrema than raw max−min, but is not
+     an outlier-robust estimator.
    - `slope` — gradient magnitude of the (lightly smoothed) elevation surface,
      computed **NaN-aware** so cells next to map holes / the border aren't
      poisoned by invented values.
    - `step` — max height difference to the 4-neighbours, to catch curbs and edges.
-4. **Classification** — each observed cell is `FREE`, `LETHAL`, or `UNKNOWN`.
-   A cell is lethal if it exceeds the robot's `max_step`, `max_slope`, or
-   `max_roughness`. Then:
+4. **Classification** — observed cells are `FREE` or `LETHAL`; cells with no
+   returns are `UNKNOWN`. An observed cell is lethal if it exceeds the robot's
+   `max_step`, `max_slope`, or `max_roughness`. Then:
    - **speckle removal** drops lethal connected-components smaller than
      `min_obstacle_cells` (sensor noise), *without* thinning real obstacles, and
    - **inflation** dilates the cleaned obstacle mask by the footprint radius so
@@ -93,7 +106,8 @@ xy    = [grid.cell_to_world(r, c) for r, c in path]   # back to meters
 `astar` runs 8-connected A\* over the `cost` grid with an octile (admissible)
 heuristic. Entering a cell costs the average of the two cells' costs times the
 step distance, so the path prefers flat, smooth ground and routes around
-obstacles. Diagonal corner-cutting between two blocked cells is forbidden.
+obstacles. A diagonal move is forbidden if either orthogonally adjacent side
+cell is blocked, preventing corner-cutting.
 
 ## Tuning for your robot / sensor
 
@@ -104,15 +118,16 @@ obstacles. Diagonal corner-cutting between two blocked cells is forbidden.
 | Small steps wrongly blocked | raise `max_step` |
 | Speckle obstacles survive | raise `GridConfig.min_obstacle_cells` |
 | Planner avoids unobserved space | lower `GridConfig.unknown_cost`, or set `cost_unknown_as_free=True` |
-| Won't enter unknown space at all | treat unknown as lethal in your own post-step |
+| Planner takes shortcuts through unobserved space | raise `GridConfig.unknown_cost`; for strict blocking, set the costs of `UNKNOWN` cells to `np.inf` |
 
 ## Supported input formats
 
 `load_point_cloud` (in `lidar_pathplan.io_utils`) reads `.npy`, KITTI-style
 `.bin` (float32 x,y,z,intensity), ASCII `.pcd`, `.ply` (ascii or binary
 little/big endian, with arbitrary extra vertex properties), and
-`.xyz`/`.txt`/`.csv`. All inputs are expected in a fixed world/odom frame;
-columns 0,1,2 are x,y,z.
+`.xyz`/`.txt`/`.csv`; columns 0,1,2 are x,y,z. A single scan may use any
+consistent Cartesian frame. Multi-scan fusion and navigation require every scan
+to be transformed into the same stable world/odom frame.
 
 ## Testing on real data
 
@@ -243,35 +258,41 @@ lidar discovers them.
 ```
 
 ```bash
-# on the robot (ROS2 Foxy), e.g. Unitree Go2-style topics:
-ros2 launch lidar_nav2 realtime_nav.launch.py \
-    input_topic:=/utlidar/cloud_deskewed odom_topic:=/utlidar/robot_odom \
-    waypoints:="[5.0, 0.0, 5.0, 5.0]" max_speed:=0.4
+# On the demonstrated Go2 firmware, /utlidar/cloud is a raw sensor-frame cloud.
+ros2 run lidar_nav2 realtime_nav --ros-args \
+    -p input_topic:=/utlidar/cloud \
+    -p odom_topic:=/utlidar/robot_odom \
+    -p cloud_in_odom_frame:=false \
+    -p waypoints:="[5.0, 0.0, 5.0, 5.0]" \
+    -p max_speed:=0.4
 
 # or send a goal at runtime:
 ros2 topic pub -1 /goal_pose geometry_msgs/PoseStamped \
     "{header: {frame_id: odom}, pose: {position: {x: 5.0, y: 2.0}}}"
 ```
 
-Design (all in the ROS-free core `lidar_nav2/navigator_core.py`, so it is fully
-unit-tested off-robot in `tests/test_navigator_core.py`):
+Design (implemented in the ROS-free core `lidar_nav2/navigator_core.py` and
+covered by seven standalone off-robot tests in `tests/test_navigator_core.py`):
 
 - **Rolling window** — the grid is a fixed-size square centered on the robot,
-  so compute stays bounded (~19 ms per scan→grid→replan cycle at 8 m / 0.10 m);
-  a goal beyond the window is projected onto its edge (rolling-horizon).
+  so compute stays bounded; a goal beyond the window is projected onto its edge
+  (rolling-horizon). Runtime depends on point count and onboard hardware.
 - **Unknown space is untraversable** (conservative onboard default): the dog is
   never commanded into space the lidar hasn't seen. If the goal isn't reachable
-  in the current map, it plans to the reachable cell nearest the goal, so it
-  drives to the frontier and new scans open the way.
+  in the current map, it plans to the reachable cell nearest the goal. When that
+  cell is beyond the robot, it drives toward the frontier and new scans can open
+  the way.
 - **Safety stops** — commanded velocity is zero whenever the newest scan is
   older than `scan_timeout` or no path exists.
 - **Carrot follower** — heading-error controller with a lookahead point;
   rotates in place first when the heading error is large. Output is a body-frame
   `Twist` (`linear.x`, `angular.z`) that quadruped walk controllers accept.
 
-**Robot-specific wiring:** the cloud must be in the same frame as the odometry
-(`odom_frame`); if your driver publishes in the base frame, set
-`cloud_in_odom_frame:=false` and the node transforms points with the odom pose.
+**Robot-specific wiring:** the planner ultimately needs the cloud in the same
+frame as the odometry (`odom_frame`). If the driver publishes in the sensor/base
+frame, set `cloud_in_odom_frame:=false`; the node applies `mount_rpy` and then the
+latest odometry pose. The demonstrated Go2 uses `/utlidar/cloud` this way; its
+firmware does not publish `/utlidar/cloud_deskewed`.
 For the **Unitree Go2**, `lidar_nav2/go2_twist_bridge.py` converts `/cmd_vel`
 into Sport-API `Move` requests (with a stop watchdog and a dry-run mode) —
 **see [deploy/DEPLOYMENT.md](deploy/DEPLOYMENT.md) for the full step-by-step
@@ -295,9 +316,11 @@ dry run, first live walk, and tuning.
 | `tests/test_pipeline.py`, `tests/test_paper_method.py` | test suites (10 + 11) |
 | `lidar_nav2/costmap_node.py` | ROS2 node: PointCloud2 → OccupancyGrid for nav2 |
 | `lidar_nav2/navigator_core.py` | ROS-free real-time navigator (rolling map, replan, follower) |
+| `lidar_nav2/global_costmap.py` | persistent sparse world-indexed map with distance-gated refresh and NPZ save/load |
 | `lidar_nav2/realtime_nav_node.py` | ROS2 node: onboard real-time navigation → `/cmd_vel` |
+| `deploy/live_grid.py` | demonstrated browser UI + onboard A\* navigation + persistent-map fusion |
 | `launch/realtime_nav.launch.py` | launch file for the onboard navigator |
-| `tests/test_navigator_core.py` | simulated end-to-end navigation tests |
+| `tests/test_navigator_core.py`, `tests/test_global_costmap.py` | simulated navigation (7) and persistent-map (5) tests |
 | `config/nav2_costmap_params.yaml` | nav2 costmap config consuming the grid |
 | `launch/lidar_costmap.launch.py` | launch file for the node |
 | `package.xml`, `setup.py` | ROS2 ament_python package metadata |
@@ -306,9 +329,10 @@ dry run, first live walk, and tuning.
 
 - **Frames**: this assumes points are already in a stable frame. On a real robot,
   transform raw scans into `odom`/`map` (via TF) before discretizing.
-- **Real-time / ROS2 / nav2**: done — see the nav2 section above. The core stays
-  plain numpy; the `lidar_nav2` node is a thin rclpy wrapper, and A\* is replaced
-  by nav2's planner once the grid is a costmap layer.
+- **Onboard demo vs nav2**: the demonstrated click-to-go loop in
+  `deploy/live_grid.py` uses the project's NumPy A\*, carrot follower, and Unitree
+  API directly; it does not run Nav2. The separate `costmap_node` integration
+  publishes the traversability grid for an external Nav2 planner.
 - **Beyond A\***: the cost grid drops into any grid planner (Dijkstra, Theta\*,
   D\* Lite for replanning). For footstep-level planning, feed `elevation` +
   `classes` to a footstep planner instead of treating the body as a disk.
