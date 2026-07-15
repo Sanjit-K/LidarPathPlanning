@@ -20,6 +20,13 @@ traversable and lethal cells in the browser, and follows continuously replanned
 A\* paths toward clicked goals. **Click the preview to watch the demo on
 YouTube.**
 
+### Live global costmap
+
+![Live browser UI showing the accumulated Unitree Go2 traversability costmap, robot trajectory, current pose, and clicked goal](docs/assets/live-global-costmap.png)
+
+Green tiles are traversable, red tiles are lethal or footprint-inflated, the
+red trace is the robot trajectory, and the cyan marker is the clicked goal.
+
 ## Quick start
 
 ```bash
