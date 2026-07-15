@@ -13,12 +13,14 @@ point cloud (N×3)  ──►  2.5D elevation grid  ──►  traversability co
 
 ## Unitree Go2 demo
 
-[![Unitree Go2 building a live traversability map and following an A-star path](https://i.ytimg.com/vi/dkycOf34YqI/hqdefault.jpg)](https://youtu.be/dkycOf34YqI)
+[**Watch the full video here →**](https://youtu.be/dkycOf34YqI)
+
+[![Preview of the Unitree Go2 building a live traversability map and following an A-star path](docs/assets/unitree-pathplanning-demo.gif)](https://youtu.be/dkycOf34YqI)
 
 The Go2 builds a persistent 2.5D costmap from its live lidar stream, renders
 traversable and lethal cells in the browser, and follows continuously replanned
-A\* paths toward clicked goals. **Click the preview to watch the demo on
-YouTube.**
+A\* paths toward clicked goals. The preview shows a later section of the demo;
+click it to open the full video on YouTube.
 
 ### Live global costmap
 
